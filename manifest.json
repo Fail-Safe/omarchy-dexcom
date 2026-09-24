@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "failsafe.dexcom",
   "name": "Dexcom Share",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "Fail-Safe",
   "license": "MIT",
   "description": "Live Dexcom Share glucose with trend arrow for the Omarchy top bar.",

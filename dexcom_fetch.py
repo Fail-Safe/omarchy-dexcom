@@ -7,12 +7,15 @@ import argparse
 import json
 import os
 import re
+import signal
+import socket
 import stat
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 APP_ID = "d89443d2-327c-4a6f-89e5-496bbb0317db"
@@ -40,6 +43,12 @@ PLACEHOLDER_PASSWORDS = {
 MAX_CREDENTIAL_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 1 * 1024 * 1024
 PRIVATE_MODE_MASK = 0o077
+# Per-op socket timeout alone is not enough: a peer that trickles a few bytes
+# within each timeout window can stall body reads indefinitely. Bound each HTTP
+# exchange (connect + headers + body) with a wall-clock deadline.
+REQUEST_TIMEOUT_SEC = 12.0
+REQUEST_DEADLINE_SEC = 20.0
+READ_CHUNK_BYTES = 8192
 
 
 def emit(payload: dict, code: int = 0) -> None:
@@ -87,11 +96,56 @@ def _read_private_file(path: Path, *, max_bytes: int, label: str) -> str:
     return raw.decode("utf-8", errors="strict")
 
 
-def _read_limited(stream, *, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
+def _deadline_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Request deadline exceeded")
+    return remaining
+
+
+@contextmanager
+def _wall_clock_deadline(seconds: float):
+    """Enforce a hard wall-clock deadline around blocking socket I/O.
+
+    urllib's per-operation timeout alone cannot stop a peer that trickles a few
+    bytes inside each timeout window; buffered reads keep succeeding and never
+    surface TimeoutError. SIGALRM interrupts the blocked read on Linux.
+    """
+    seconds = float(seconds)
+    if seconds <= 0:
+        raise TimeoutError("Request deadline exceeded")
+    if not (hasattr(signal, "setitimer") and hasattr(signal, "SIGALRM")):
+        yield
+        return
+
+    def _handler(_signum, _frame):
+        raise TimeoutError("Request deadline exceeded")
+
+    previous = signal.signal(signal.SIGALRM, _handler)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _read_limited(
+    stream,
+    *,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+    deadline: float | None = None,
+) -> bytes:
     chunks: list[bytes] = []
     total = 0
     while True:
-        chunk = stream.read(min(65536, max_bytes - total + 1))
+        if deadline is not None:
+            _deadline_remaining(deadline)
+        to_read = min(READ_CHUNK_BYTES, max_bytes - total + 1)
+        try:
+            chunk = stream.read(to_read)
+        except (TimeoutError, socket.timeout) as exc:
+            raise TimeoutError("Request timed out while reading response") from exc
         if not chunk:
             break
         total += len(chunk)
@@ -156,7 +210,12 @@ def load_credentials(path: Path) -> dict:
     }
 
 
-def http_json(url: str, body: dict, timeout: float = 12.0):
+def http_json(
+    url: str,
+    body: dict,
+    timeout: float = REQUEST_TIMEOUT_SEC,
+    deadline_sec: float = REQUEST_DEADLINE_SEC,
+):
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -167,24 +226,31 @@ def http_json(url: str, body: dict, timeout: float = 12.0):
             "User-Agent": USER_AGENT,
         },
     )
+    deadline = time.monotonic() + max(0.1, float(deadline_sec))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = _read_limited(response).decode("utf-8", errors="replace").strip()
-            status = getattr(response, "status", 200)
+        with _wall_clock_deadline(max(0.1, float(deadline_sec))):
+            open_timeout = min(float(timeout), _deadline_remaining(deadline))
+            with urllib.request.urlopen(request, timeout=open_timeout) as response:
+                raw = _read_limited(response, deadline=deadline).decode("utf-8", errors="replace").strip()
+                status = getattr(response, "status", 200)
     except ValueError as exc:
         return None, str(exc)
     except urllib.error.HTTPError as exc:
         try:
-            detail = _read_limited(exc).decode("utf-8", errors="replace").strip()
-        except ValueError:
+            with _wall_clock_deadline(max(0.1, _deadline_remaining(deadline))):
+                detail = _read_limited(exc, deadline=deadline).decode("utf-8", errors="replace").strip()
+        except (ValueError, TimeoutError, socket.timeout):
             detail = f"HTTP {exc.code}"
         message = detail or f"HTTP {exc.code}"
         if exc.code in (401, 500) and "SessionNotValid" in detail:
             return None, "session_invalid"
         return None, message[:240]
     except urllib.error.URLError as exc:
-        return None, f"Network error: {exc.reason}"
-    except TimeoutError:
+        reason = exc.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return None, "Request timed out"
+        return None, f"Network error: {reason}"
+    except (TimeoutError, socket.timeout):
         return None, "Request timed out"
     if not raw:
         return None if status >= 400 else "", None
