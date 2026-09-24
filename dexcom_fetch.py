@@ -8,7 +8,6 @@ import json
 import os
 import re
 import signal
-import socket
 import stat
 import sys
 import tempfile
@@ -17,6 +16,7 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
+from typing import NoReturn, TypeGuard
 
 APP_ID = "d89443d2-327c-4a6f-89e5-496bbb0317db"
 HOSTS = {
@@ -51,13 +51,13 @@ REQUEST_DEADLINE_SEC = 20.0
 READ_CHUNK_BYTES = 8192
 
 
-def emit(payload: dict, code: int = 0) -> None:
+def emit(payload: dict, code: int = 0) -> NoReturn:
     sys.stdout.write(json.dumps(payload, separators=(",", ":")))
     sys.stdout.write("\n")
     raise SystemExit(code)
 
 
-def valid_session(session_id: object) -> bool:
+def valid_session(session_id: object) -> TypeGuard[str]:
     if not isinstance(session_id, str):
         return False
     if session_id == NULL_SESSION:
@@ -144,7 +144,7 @@ def _read_limited(
         to_read = min(READ_CHUNK_BYTES, max_bytes - total + 1)
         try:
             chunk = stream.read(to_read)
-        except (TimeoutError, socket.timeout) as exc:
+        except TimeoutError as exc:
             raise TimeoutError("Request timed out while reading response") from exc
         if not chunk:
             break
@@ -239,7 +239,7 @@ def http_json(
         try:
             with _wall_clock_deadline(max(0.1, _deadline_remaining(deadline))):
                 detail = _read_limited(exc, deadline=deadline).decode("utf-8", errors="replace").strip()
-        except (ValueError, TimeoutError, socket.timeout):
+        except (ValueError, TimeoutError):
             detail = f"HTTP {exc.code}"
         message = detail or f"HTTP {exc.code}"
         if exc.code in (401, 500) and "SessionNotValid" in detail:
@@ -247,10 +247,10 @@ def http_json(
         return None, message[:240]
     except urllib.error.URLError as exc:
         reason = exc.reason
-        if isinstance(reason, (TimeoutError, socket.timeout)):
+        if isinstance(reason, TimeoutError):
             return None, "Request timed out"
         return None, f"Network error: {reason}"
-    except (TimeoutError, socket.timeout):
+    except TimeoutError:
         return None, "Request timed out"
     if not raw:
         return None if status >= 400 else "", None
@@ -367,6 +367,8 @@ def parse_stamp(entry: dict) -> tuple[int, int]:
 
 def normalize_entry(entry: dict) -> dict | None:
     mgdl = entry.get("Value")
+    if mgdl is None:
+        return None
     try:
         mgdl_int = int(mgdl)
     except (TypeError, ValueError):
@@ -475,8 +477,8 @@ def main() -> None:
     if error == "session_invalid":
         session_id = login(creds)
         entries, error = read_glucose(creds, session_id, minutes=minutes, max_count=max_count)
-    if error:
-        emit({"ok": False, "error": f"Glucose fetch failed: {error}"}, 1)
+    if error or not isinstance(entries, list):
+        emit({"ok": False, "error": f"Glucose fetch failed: {error or 'No glucose data'}"}, 1)
 
     save_cached_session(cache_path, creds, session_id)
     emit(normalize(entries), 0)

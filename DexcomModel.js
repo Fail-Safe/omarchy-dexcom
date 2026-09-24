@@ -3,14 +3,23 @@
 var TREND_ARROWS = {
   "None": "",
   "DoubleUp": "⇈",
+  "Double-Up": "⇈",
   "SingleUp": "↑",
+  "Single-Up": "↑",
   "FortyFiveUp": "↗",
-  "Flat": "→",
+  "Forty-Five Up": "↗",
+  "Steady": "→",
+  "Flat": "→", // Dexcom Share still emits "Flat"
   "FortyFiveDown": "↘",
+  "Forty-Five Down": "↘",
   "SingleDown": "↓",
+  "Single-Down": "↓",
   "DoubleDown": "⇊",
+  "Double-Down": "⇊",
   "NotComputable": "?",
+  "Not Computable": "?",
   "RateOutOfRange": "?",
+  "Rate Out-of-Range": "?",
   "1": "⇈",
   "2": "↑",
   "3": "↗",
@@ -23,15 +32,24 @@ var TREND_ARROWS = {
 }
 
 var TREND_NAMES = {
-  "1": "DoubleUp",
-  "2": "SingleUp",
-  "3": "FortyFiveUp",
-  "4": "Flat",
-  "5": "FortyFiveDown",
-  "6": "SingleDown",
-  "7": "DoubleDown",
-  "8": "NotComputable",
-  "9": "RateOutOfRange"
+  "1": "Double-Up",
+  "doubleup": "Double-Up",
+  "2": "Single-Up",
+  "singleup": "Single-Up",
+  "3": "Forty-Five Up",
+  "fortyfiveup": "Forty-Five Up",
+  "4": "Steady",
+  "flat": "Steady", // Dexcom Share still emits "Flat"
+  "5": "Forty-Five Down",
+  "fortyfivedown": "Forty-Five Down",
+  "6": "Single-Down",
+  "singledown": "Single-Down",
+  "7": "Double-Down",
+  "doubledown": "Double-Down",
+  "8": "Not Computable",
+  "notcomputable": "Not Computable",
+  "9": "Rate Out-of-Range",
+  "rateoutofrange": "Rate Out-of-Range"
 }
 
 var RANGE_HOURS = [1, 4, 12, 24]
@@ -40,6 +58,8 @@ function trendName(trend) {
   if (trend === undefined || trend === null || trend === "") return "None"
   var key = String(trend)
   if (TREND_NAMES[key]) return TREND_NAMES[key]
+  var lower = key.toLowerCase()
+  if (TREND_NAMES[lower]) return TREND_NAMES[lower]
   return key
 }
 
@@ -55,6 +75,89 @@ function healthLevel(mgdl, urgentLow, low, high, urgentHigh) {
   if (mgdl <= urgentLow || mgdl >= urgentHigh) return "urgent"
   if (mgdl < low || mgdl > high) return "warn"
   return "ok"
+}
+
+function glucoseColor(mgdl, urgentLow, low, high, urgentHigh) {
+  return healthColor(healthLevel(mgdl, urgentLow, low, high, urgentHigh))
+}
+
+// Split a history polyline into colored segments, cutting at threshold crossings
+// so a run through high/low ranges is not painted with the current reading color.
+function coloredTrendSegments(points, urgentLow, low, high, urgentHigh) {
+  var segments = []
+  if (!points || points.length < 2) return segments
+  var thresholds = [urgentLow, low, high, urgentHigh]
+  for (var i = 1; i < points.length; i++) {
+    var a = points[i - 1]
+    var b = points[i]
+    var mg0 = a.mgdl
+    var mg1 = b.mgdl
+    var ep0 = a.epochSec
+    var ep1 = b.epochSec
+    if (!isFinite(mg0) || !isFinite(mg1) || !isFinite(ep0) || !isFinite(ep1)) continue
+
+    var cuts = [0]
+    var span = mg1 - mg0
+    if (span !== 0) {
+      for (var t = 0; t < thresholds.length; t++) {
+        var level = thresholds[t]
+        if (!isFinite(level)) continue
+        if ((mg0 < level && mg1 > level) || (mg0 > level && mg1 < level)) {
+          var ratio = (level - mg0) / span
+          if (ratio > 0 && ratio < 1) cuts.push(ratio)
+        }
+      }
+    }
+    cuts.push(1)
+    cuts.sort(function(x, y) { return x - y })
+
+    for (var c = 1; c < cuts.length; c++) {
+      var r0 = cuts[c - 1]
+      var r1 = cuts[c]
+      if (r1 - r0 < 1e-9) continue
+      var midRatio = (r0 + r1) / 2
+      var midMg = mg0 + span * midRatio
+      segments.push({
+        epoch0: ep0 + (ep1 - ep0) * r0,
+        mgdl0: mg0 + span * r0,
+        epoch1: ep0 + (ep1 - ep0) * r1,
+        mgdl1: mg0 + span * r1,
+        color: glucoseColor(midMg, urgentLow, low, high, urgentHigh)
+      })
+    }
+  }
+  return segments
+}
+
+// Dexcom Share reports mg/dL. Display may convert with the usual clinical factor.
+var MGDL_PER_MMOL = 18.0
+
+function normalizeUnit(unit) {
+  var raw = String(unit || "").trim().toLowerCase()
+  if (raw === "mmol/l" || raw === "mmol" || raw === "mmoll") return "mmol/L"
+  return "mg/dL"
+}
+
+function isMmol(unit) {
+  return normalizeUnit(unit) === "mmol/L"
+}
+
+function mgdlToDisplay(mgdl, unit) {
+  if (!isFinite(mgdl) || mgdl < 0) return NaN
+  if (isMmol(unit)) return mgdl / MGDL_PER_MMOL
+  return mgdl
+}
+
+function formatGlucoseNumber(mgdl, unit) {
+  var value = mgdlToDisplay(mgdl, unit)
+  if (!isFinite(value)) return "--"
+  if (isMmol(unit)) return (Math.round(value * 10) / 10).toFixed(1)
+  return String(Math.round(value))
+}
+
+function formatGlucose(mgdl, unit) {
+  if (!isFinite(mgdl) || mgdl < 0) return "--"
+  return formatGlucoseNumber(mgdl, unit) + " " + normalizeUnit(unit)
 }
 
 function healthColor(level) {
@@ -176,8 +279,9 @@ function formatClock(epochSec) {
 function parseFetchPayload(raw) {
   var text = String(raw || "").trim()
   if (!text) return { ok: false, error: "Empty response" }
+  var data
   try {
-    var data = JSON.parse(text)
+    data = JSON.parse(text)
   } catch (e) {
     return { ok: false, error: "Invalid JSON from fetch helper" }
   }

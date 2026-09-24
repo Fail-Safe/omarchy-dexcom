@@ -24,6 +24,7 @@ Item {
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string fetchScript: pluginDir + "/dexcom_fetch.py"
   readonly property string credentialsPath: effectiveCredentialsPath()
+  readonly property string glucoseUnit: DexcomModel.normalizeUnit(setting("glucoseUnit", "mg/dL"))
   readonly property int intervalSec: boundedInt("refreshIntervalSec", 60, 30, 600)
   readonly property int lowMgdl: boundedInt("lowMgdl", 70, 40, 120)
   readonly property int highMgdl: Math.max(lowMgdl + 1, boundedInt("highMgdl", 180, 120, 300))
@@ -32,7 +33,8 @@ Item {
   readonly property string healthLevel: DexcomModel.healthLevel(mgdl, urgentLowMgdl, lowMgdl, highMgdl, urgentHighMgdl)
   readonly property color healthColor: DexcomModel.healthColor(healthLevel)
   readonly property color badgeTextColor: DexcomModel.badgeTextColor(healthLevel)
-  readonly property string badgeText: mgdl < 0 ? "--" : (String(mgdl) + (arrow !== "" ? " " + arrow : ""))
+  readonly property string glucoseText: DexcomModel.formatGlucose(mgdl, glucoseUnit)
+  readonly property string badgeText: mgdl < 0 ? "--" : (DexcomModel.formatGlucoseNumber(mgdl, glucoseUnit) + (arrow !== "" ? " " + arrow : ""))
   readonly property string ageText: DexcomModel.formatAge(ageSec)
   readonly property var chartPoints: DexcomModel.historyForHours(history, chartHours)
   readonly property var chartStats: DexcomModel.historyStats(chartPoints)
@@ -101,7 +103,7 @@ Item {
   }
 
   function status() {
-    return (mgdl < 0 ? "offline" : mgdl + " mg/dL " + arrow)
+    return (mgdl < 0 ? "offline" : glucoseText + " " + arrow)
       + (ageSec >= 0 ? " (" + ageText + ")" : "")
       + (history && history.length ? (", " + history.length + " pts") : "")
       + (paused ? ", paused" : (checking ? ", checking" : ""))

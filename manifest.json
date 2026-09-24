@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "failsafe.dexcom",
   "name": "Dexcom Share",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "author": "Fail-Safe",
   "license": "MIT",
-  "description": "Live Dexcom Share glucose with trend arrow for the Omarchy top bar.",
+  "description": "Live Dexcom Share glucose (mg/dL or mmol/L) with trend arrow for the Omarchy top bar.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,12 +16,13 @@
   },
   "barWidget": {
     "displayName": "Dexcom Share",
-    "description": "Glucose reading and trend arrow from Dexcom Share.",
+    "description": "Glucose reading and trend arrow from Dexcom Share (mg/dL or mmol/L).",
     "category": "Health",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 60,
+      "glucoseUnit": "mg/dL",
       "lowMgdl": 70,
       "highMgdl": 180,
       "urgentLowMgdl": 54,
@@ -36,6 +37,14 @@
         "min": 30,
         "max": 600,
         "defaultValue": 60
+      },
+      {
+        "key": "glucoseUnit",
+        "type": "enum",
+        "label": "Glucose unit",
+        "options": ["mg/dL", "mmol/L"],
+        "defaultValue": "mg/dL",
+        "description": "Display unit for readings and chart labels. Threshold settings stay in mg/dL (÷18 for mmol/L)."
       },
       {
         "key": "lowMgdl",

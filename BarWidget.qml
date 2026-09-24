@@ -13,6 +13,8 @@ BarWidget {
 
   readonly property var service: bar && bar.shell ? bar.shell.serviceFor(moduleName) : null
   readonly property int mgdl: service ? service.mgdl : -1
+  readonly property string glucoseUnit: service ? service.glucoseUnit : "mg/dL"
+  readonly property string glucoseText: service ? service.glucoseText : "--"
   readonly property string arrow: service ? service.arrow : ""
   readonly property string trend: service ? service.trend : "None"
   readonly property int ageSec: service ? service.ageSec : -1
@@ -27,6 +29,8 @@ BarWidget {
   readonly property var chartStats: service ? service.chartStats : ({ count: 0, min: -1, max: -1, avg: -1 })
   readonly property int lowMgdl: service ? service.lowMgdl : 70
   readonly property int highMgdl: service ? service.highMgdl : 180
+  readonly property int urgentLowMgdl: service ? service.urgentLowMgdl : 54
+  readonly property int urgentHighMgdl: service ? service.urgentHighMgdl : 250
   readonly property int historyCount: service && service.history ? service.history.length : 0
   property int hoverIndex: -1
   property real hoverMouseX: -1
@@ -34,6 +38,13 @@ BarWidget {
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
+
+  function formatMgdl(value) {
+    return DexcomModel.formatGlucoseNumber(value, root.glucoseUnit)
+  }
+  function formatMgdlFull(value) {
+    return DexcomModel.formatGlucose(value, root.glucoseUnit)
+  }
 
   function syncServiceSettings() { if (service) service.settings = settings || ({}) }
   onServiceChanged: syncServiceSettings()
@@ -58,7 +69,7 @@ BarWidget {
     ctx.clearRect(0, 0, w, h)
 
     var points = root.chartPoints || []
-    var padL = 34
+    var padL = DexcomModel.isMmol(root.glucoseUnit) ? 40 : 34
     var padR = 10
     var padT = 10
     var padB = root.chartHours >= 4 ? 28 : 22
@@ -71,13 +82,15 @@ BarWidget {
     var xMin = nowSec - root.chartHours * 3600
     var xMax = nowSec
     var dim = "#9ca3af"
-    var line = String(root.healthColor)
 
     function xPos(epoch) {
       return padL + ((epoch - xMin) / Math.max(1, xMax - xMin)) * plotW
     }
     function yPos(mg) {
       return padT + (1 - ((mg - yMin) / Math.max(1, yMax - yMin))) * plotH
+    }
+    function colorAt(mg) {
+      return DexcomModel.glucoseColor(mg, root.urgentLowMgdl, root.lowMgdl, root.highMgdl, root.urgentHighMgdl)
     }
 
     ctx.fillStyle = "rgba(255,255,255,0.05)"
@@ -103,7 +116,7 @@ BarWidget {
       ctx.stroke()
       ctx.textAlign = "right"
       ctx.textBaseline = "middle"
-      ctx.fillText(String(ticks[t]), padL - 6, y)
+      ctx.fillText(root.formatMgdl(ticks[t]), padL - 6, y)
     }
 
     var guides = [root.lowMgdl, root.highMgdl]
@@ -126,19 +139,23 @@ BarWidget {
       return
     }
 
-    ctx.strokeStyle = line
+    var segments = DexcomModel.coloredTrendSegments(
+      points, root.urgentLowMgdl, root.lowMgdl, root.highMgdl, root.urgentHighMgdl
+    )
     ctx.lineWidth = 2
-    ctx.beginPath()
-    for (var i = 0; i < points.length; i++) {
-      var px = xPos(points[i].epochSec)
-      var py = yPos(points[i].mgdl)
-      if (i === 0) ctx.moveTo(px, py)
-      else ctx.lineTo(px, py)
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+    for (var s = 0; s < segments.length; s++) {
+      var seg = segments[s]
+      ctx.strokeStyle = seg.color
+      ctx.beginPath()
+      ctx.moveTo(xPos(seg.epoch0), yPos(seg.mgdl0))
+      ctx.lineTo(xPos(seg.epoch1), yPos(seg.mgdl1))
+      ctx.stroke()
     }
-    ctx.stroke()
 
     var last = points[points.length - 1]
-    ctx.fillStyle = line
+    ctx.fillStyle = colorAt(last.mgdl)
     ctx.beginPath()
     ctx.arc(xPos(last.epochSec), yPos(last.mgdl), 3.5, 0, Math.PI * 2)
     ctx.fill()
@@ -148,6 +165,7 @@ BarWidget {
       var hp = points[root.hoverIndex]
       var hx = xPos(hp.epochSec)
       var hy = yPos(hp.mgdl)
+      var hoverColor = colorAt(hp.mgdl)
 
       ctx.strokeStyle = "rgba(255,255,255,0.45)"
       ctx.lineWidth = 1
@@ -164,12 +182,12 @@ BarWidget {
       ctx.beginPath()
       ctx.arc(hx, hy, 4.5, 0, Math.PI * 2)
       ctx.fill()
-      ctx.fillStyle = line
+      ctx.fillStyle = hoverColor
       ctx.beginPath()
       ctx.arc(hx, hy, 3, 0, Math.PI * 2)
       ctx.fill()
 
-      var label = hp.mgdl + " mg/dL"
+      var label = root.formatMgdlFull(hp.mgdl)
       var sub = DexcomModel.formatClock(hp.epochSec)
       if (hp.ageSec >= 0) sub = sub + (sub !== "" ? " · " : "") + DexcomModel.formatAge(hp.ageSec)
       ctx.font = "bold 12px sans-serif"
@@ -249,7 +267,7 @@ BarWidget {
     useActiveColor: false
     tooltipText: root.mgdl < 0
       ? ("Dexcom: offline" + (root.lastError !== "" ? " — " + root.lastError : ""))
-      : ("Dexcom: " + root.mgdl + " mg/dL " + root.arrow + " · " + root.ageText + (root.paused ? " (paused)" : ""))
+      : ("Dexcom: " + root.glucoseText + " " + root.arrow + " · " + root.ageText + (root.paused ? " (paused)" : ""))
 
     Rectangle {
       anchors.centerIn: parent
@@ -335,7 +353,7 @@ BarWidget {
 
             PanelHero {
               Layout.fillWidth: true
-              title: root.mgdl < 0 ? "Offline" : root.mgdl + " mg/dL " + root.arrow
+              title: root.mgdl < 0 ? "Offline" : root.glucoseText + " " + root.arrow
               meta: root.mgdl < 0 ? "Dexcom Share" : (root.trend + " · " + root.ageText)
               foreground: root.healthColor
               fontFamily: panel.fontFamily
@@ -397,7 +415,7 @@ BarWidget {
 
               function updateHover(mx) {
                 root.hoverMouseX = mx
-                var padL = 34
+                var padL = DexcomModel.isMmol(root.glucoseUnit) ? 40 : 34
                 var padR = 10
                 var plotW = Math.max(1, chartCanvas.width - padL - padR)
                 var idx = DexcomModel.nearestPointIndex(
@@ -454,6 +472,9 @@ BarWidget {
                 function onHealthColorChanged() { chartCanvas.requestPaint() }
                 function onLowMgdlChanged() { chartCanvas.requestPaint() }
                 function onHighMgdlChanged() { chartCanvas.requestPaint() }
+                function onUrgentLowMgdlChanged() { chartCanvas.requestPaint() }
+                function onUrgentHighMgdlChanged() { chartCanvas.requestPaint() }
+                function onGlucoseUnitChanged() { chartCanvas.requestPaint() }
                 function onHistoryCountChanged() { chartCanvas.requestPaint() }
                 function onHoverIndexChanged() { chartCanvas.requestPaint() }
                 function onOpenedChanged() {
@@ -466,7 +487,10 @@ BarWidget {
             Text {
               Layout.fillWidth: true
               text: root.chartStats.count > 0
-                ? (root.chartStats.count + " readings · min " + root.chartStats.min + " · avg " + root.chartStats.avg + " · max " + root.chartStats.max)
+                ? (root.chartStats.count + " readings · min " + root.formatMgdl(root.chartStats.min)
+                  + " · avg " + root.formatMgdl(root.chartStats.avg)
+                  + " · max " + root.formatMgdl(root.chartStats.max)
+                  + " " + root.glucoseUnit)
                 : (root.historyCount > 0 ? ("Loaded " + root.historyCount + " points · pick a range") : "Waiting for history…")
               textFormat: Text.PlainText
               color: panel.dim
