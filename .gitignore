@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .session.json
 .DS_Store
+install.sh
+uninstall.sh

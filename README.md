@@ -18,10 +18,12 @@ chmod 600 ~/.config/omarchy/dexcom-share.json
 # edit accountName, password, region (us or ous)
 ```
 
-Local development:
+For local development, clone this repo into `~/.config/omarchy/plugins/failsafe.dexcom` (or symlink it), then:
 
 ```sh
-./install.sh
+omarchy plugin validate ~/.config/omarchy/plugins/failsafe.dexcom
+omarchy-shell shell rescanPlugins
+omarchy plugin enable failsafe.dexcom --section right
 ```
 
 ## Use
