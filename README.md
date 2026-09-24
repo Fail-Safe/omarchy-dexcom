@@ -18,6 +18,8 @@ chmod 600 ~/.config/omarchy/dexcom-share.json
 # edit accountName, password, region (us or ous)
 ```
 
+The credentials file must be a regular file owned by your user, mode `600` (not group/world-readable, not a symlink).
+
 For local development, clone this repo into `~/.config/omarchy/plugins/failsafe.dexcom` (or symlink it), then:
 
 ```sh
@@ -49,6 +51,8 @@ omarchy plugin remove failsafe.dexcom --yes
 
 - Uses the community Dexcom Share publisher API (same approach as Nightscout / pydexcom). Dexcom may change or break that API at any time.
 - Password is read from the credentials file only — never passed on the process command line beyond the file path.
+- Credential and session-cache files are opened with no-follow checks (owner/mode/size); the session cache is written via exclusive temp + atomic replace.
+- Remote Share responses are size-capped while reading.
 - Session id is cached under `~/.cache/omarchy-dexcom/`.
 
 ## Disclaimer

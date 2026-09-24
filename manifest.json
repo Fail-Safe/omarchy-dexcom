@@ -2,11 +2,14 @@
   "schemaVersion": 1,
   "id": "failsafe.dexcom",
   "name": "Dexcom Share",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Fail-Safe",
   "license": "MIT",
   "description": "Live Dexcom Share glucose with trend arrow for the Omarchy top bar.",
-  "kinds": ["service", "bar-widget"],
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
   "entryPoints": {
     "service": "Service.qml",
     "barWidget": "BarWidget.qml"
@@ -26,12 +29,53 @@
       "credentialsPath": ""
     },
     "schema": [
-      {"key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 30, "max": 600, "defaultValue": 60},
-      {"key": "lowMgdl", "type": "integer", "label": "Low threshold (mg/dL)", "min": 40, "max": 120, "defaultValue": 70},
-      {"key": "highMgdl", "type": "integer", "label": "High threshold (mg/dL)", "min": 120, "max": 300, "defaultValue": 180},
-      {"key": "urgentLowMgdl", "type": "integer", "label": "Urgent low (mg/dL)", "min": 40, "max": 80, "defaultValue": 54},
-      {"key": "urgentHighMgdl", "type": "integer", "label": "Urgent high (mg/dL)", "min": 180, "max": 400, "defaultValue": 250},
-      {"key": "credentialsPath", "type": "string", "label": "Credentials file", "description": "JSON file with accountName, password, and optional region (us|ous). Default: ~/.config/omarchy/dexcom-share.json", "defaultValue": ""}
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 30,
+        "max": 600,
+        "defaultValue": 60
+      },
+      {
+        "key": "lowMgdl",
+        "type": "integer",
+        "label": "Low threshold (mg/dL)",
+        "min": 40,
+        "max": 120,
+        "defaultValue": 70
+      },
+      {
+        "key": "highMgdl",
+        "type": "integer",
+        "label": "High threshold (mg/dL)",
+        "min": 120,
+        "max": 300,
+        "defaultValue": 180
+      },
+      {
+        "key": "urgentLowMgdl",
+        "type": "integer",
+        "label": "Urgent low (mg/dL)",
+        "min": 40,
+        "max": 80,
+        "defaultValue": 54
+      },
+      {
+        "key": "urgentHighMgdl",
+        "type": "integer",
+        "label": "Urgent high (mg/dL)",
+        "min": 180,
+        "max": 400,
+        "defaultValue": 250
+      },
+      {
+        "key": "credentialsPath",
+        "type": "string",
+        "label": "Credentials file",
+        "description": "JSON file with accountName, password, and optional region (us|ous). Default: ~/.config/omarchy/dexcom-share.json",
+        "defaultValue": ""
+      }
     ]
   }
 }

@@ -7,7 +7,9 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -35,6 +37,9 @@ PLACEHOLDER_PASSWORDS = {
     "password",
     "changeme",
 }
+MAX_CREDENTIAL_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 1 * 1024 * 1024
+PRIVATE_MODE_MASK = 0o077
 
 
 def emit(payload: dict, code: int = 0) -> None:
@@ -51,13 +56,75 @@ def valid_session(session_id: object) -> bool:
     return bool(SESSION_RE.match(session_id))
 
 
+def _read_private_file(path: Path, *, max_bytes: int, label: str) -> str:
+    """Open a private regular file with O_NOFOLLOW and validate ownership/mode/size."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        emit({"ok": False, "error": f"{label} missing: {path}"}, 2)
+    except OSError as exc:
+        emit({"ok": False, "error": f"Cannot open {label}: {exc}"}, 2)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            emit({"ok": False, "error": f"{label} must be a regular file"}, 2)
+        if info.st_uid != os.getuid():
+            emit({"ok": False, "error": f"{label} must be owned by the current user"}, 2)
+        if info.st_nlink != 1:
+            emit({"ok": False, "error": f"{label} must have exactly one hard link"}, 2)
+        if stat.S_IMODE(info.st_mode) & PRIVATE_MODE_MASK:
+            emit({"ok": False, "error": f"{label} must not be group/world accessible"}, 2)
+        if info.st_size > max_bytes:
+            emit({"ok": False, "error": f"{label} exceeds {max_bytes} byte limit"}, 2)
+        raw = os.read(fd, max_bytes + 1)
+        if len(raw) > max_bytes:
+            emit({"ok": False, "error": f"{label} exceeds {max_bytes} byte limit"}, 2)
+    finally:
+        os.close(fd)
+    return raw.decode("utf-8", errors="strict")
+
+
+def _read_limited(stream, *, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = stream.read(min(65536, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"Response exceeds {max_bytes} byte limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload).encode("utf-8")
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def load_credentials(path: Path) -> dict:
     try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        emit({"ok": False, "error": f"Credentials file missing: {path}"}, 2)
-    except OSError as exc:
-        emit({"ok": False, "error": f"Cannot read credentials: {exc}"}, 2)
+        raw = _read_private_file(path, max_bytes=MAX_CREDENTIAL_BYTES, label="Credentials file")
+    except UnicodeDecodeError:
+        emit({"ok": False, "error": "Credentials file is not valid UTF-8"}, 2)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -102,10 +169,15 @@ def http_json(url: str, body: dict, timeout: float = 12.0):
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace").strip()
+            raw = _read_limited(response).decode("utf-8", errors="replace").strip()
             status = getattr(response, "status", 200)
+    except ValueError as exc:
+        return None, str(exc)
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace").strip()
+        try:
+            detail = _read_limited(exc).decode("utf-8", errors="replace").strip()
+        except ValueError:
+            detail = f"HTTP {exc.code}"
         message = detail or f"HTTP {exc.code}"
         if exc.code in (401, 500) and "SessionNotValid" in detail:
             return None, "session_invalid"
@@ -180,6 +252,8 @@ def login_with_id(creds: dict, account_id: str) -> str | None:
 
 
 def read_glucose(creds: dict, session_id: str, minutes: int = 1440, max_count: int = 1):
+    # Share glucose endpoints accept sessionId/minutes/maxCount in a JSON POST body.
+    # Keep credentials out of the URL (unlike some Share clients that use query params).
     paths = [
         "/ShareWebServices/Services/Publisher/ReadPublisherLatestGlucoseValues",
         "/ShareWebServices/Services/Subscriber/ReadSubscriberLatestGlucoseValues",
@@ -265,6 +339,38 @@ def normalize(entries: list) -> dict:
     }
 
 
+def load_cached_session(cache_path: Path, creds: dict) -> str | None:
+    if not cache_path.exists():
+        return None
+    try:
+        raw = _read_private_file(cache_path, max_bytes=MAX_CREDENTIAL_BYTES, label="Session cache")
+        cached = json.loads(raw)
+    except (SystemExit, UnicodeDecodeError, json.JSONDecodeError, TypeError, OSError):
+        return None
+    if (
+        isinstance(cached, dict)
+        and cached.get("accountName") == creds["accountName"]
+        and cached.get("region") == creds["region"]
+        and valid_session(str(cached.get("sessionId") or ""))
+    ):
+        return str(cached["sessionId"])
+    return None
+
+
+def save_cached_session(cache_path: Path, creds: dict, session_id: str) -> None:
+    try:
+        _write_private_json(
+            cache_path,
+            {
+                "accountName": creds["accountName"],
+                "region": creds["region"],
+                "sessionId": session_id,
+            },
+        )
+    except OSError:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fetch Dexcom Share glucose")
     parser.add_argument(
@@ -295,20 +401,7 @@ def main() -> None:
     creds = load_credentials(Path(args.credentials).expanduser())
     cache_path = Path(args.session_cache).expanduser()
 
-    session_id = None
-    if cache_path.is_file():
-        try:
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if (
-                isinstance(cached, dict)
-                and cached.get("accountName") == creds["accountName"]
-                and cached.get("region") == creds["region"]
-                and valid_session(str(cached.get("sessionId") or ""))
-            ):
-                session_id = str(cached["sessionId"])
-        except (OSError, json.JSONDecodeError, TypeError):
-            session_id = None
-
+    session_id = load_cached_session(cache_path, creds)
     if not session_id:
         session_id = login(creds)
 
@@ -319,22 +412,7 @@ def main() -> None:
     if error:
         emit({"ok": False, "error": f"Glucose fetch failed: {error}"}, 1)
 
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(
-                {
-                    "accountName": creds["accountName"],
-                    "region": creds["region"],
-                    "sessionId": session_id,
-                }
-            ),
-            encoding="utf-8",
-        )
-        os.chmod(cache_path, 0o600)
-    except OSError:
-        pass
-
+    save_cached_session(cache_path, creds, session_id)
     emit(normalize(entries), 0)
 
 
