@@ -1,0 +1,5 @@
+dexcom-share.json
+__pycache__/
+*.pyc
+.session.json
+.DS_Store
