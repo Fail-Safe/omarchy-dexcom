@@ -4,6 +4,8 @@ See your, or your loved one’s, **Dexcom Share** CGM readings on your Omarchy d
 
 This is a **community project for those with Type 1 diabetes, their caregivers, and/or followers** who already use Dexcom Share. It is **not** made by Dexcom, **not** a medical device, and **not** for treatment decisions.
 
+Best-effort community visibility on the desktop — not a Dexcom product, not affiliated with Dexcom, and not meant to compete with or harm Dexcom in any way.
+
 ![Dexcom Share on the Omarchy bar and detail panel](preview.png)
 
 ![Another view with a steady reading](docs/preview-steady.png)
