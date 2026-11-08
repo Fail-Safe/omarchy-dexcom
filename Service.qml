@@ -1,12 +1,15 @@
+pragma Singleton
+
 import QtQuick
 import Quickshell
 import Quickshell.Io
 import "DexcomModel.js" as DexcomModel
 
-Item {
+Singleton {
   id: root
 
   property var settings: ({})
+  property int attachedWidgets: 0
   property int mgdl: -1
   property string trend: "None"
   property string arrow: ""
@@ -43,6 +46,18 @@ Item {
     if (!paused) Qt.callLater(root.refresh)
   }
 
+  onAttachedWidgetsChanged: {
+    if (attachedWidgets === 0) stopFetch()
+  }
+
+  function attachWidget() {
+    attachedWidgets++
+  }
+
+  function detachWidget() {
+    attachedWidgets--
+  }
+
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
@@ -68,7 +83,7 @@ Item {
   }
 
   function refresh() {
-    if (checking || paused) return
+    if (checking || paused || attachedWidgets === 0) return
     checking = true
     lastError = ""
     outputBuffer = ""
@@ -86,17 +101,21 @@ Item {
     setPaused(!paused)
   }
 
+  function stopFetch() {
+    if (fetchProcess.running) {
+      canceling = true
+      fetchProcess.running = false
+    } else {
+      checking = false
+    }
+  }
+
   function setPaused(value) {
     var next = value === true
     if (paused === next) return
     paused = next
     if (paused) {
-      if (fetchProcess.running) {
-        canceling = true
-        fetchProcess.running = false
-      } else {
-        checking = false
-      }
+      stopFetch()
     } else {
       refresh()
     }
@@ -124,7 +143,7 @@ Item {
       if (root.canceling) {
         root.canceling = false
         root.checking = false
-        if (!root.paused) Qt.callLater(root.refresh)
+        if (root.attachedWidgets > 0 && !root.paused) Qt.callLater(root.refresh)
         return
       }
       root.checking = false
@@ -153,7 +172,7 @@ Item {
   Timer {
     interval: root.intervalSec * 1000
     repeat: true
-    running: !root.paused
+    running: root.attachedWidgets > 0 && !root.paused
     triggeredOnStart: true
     onTriggered: root.refresh()
   }

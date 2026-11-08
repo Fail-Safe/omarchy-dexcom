@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -210,6 +211,79 @@ class ReadGlucoseTests(unittest.TestCase):
             )
         self.assertIsNone(data)
         self.assertEqual(error, "session_invalid")
+
+
+class SessionRecoveryTests(unittest.TestCase):
+    def run_fetch(self, error_code, reject_new_session=False):
+        old_session = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        new_session = "11111111-2222-3333-4444-555555555555"
+        creds = {
+            "accountName": "caregiver@example.com",
+            "password": "secret-password",
+            "region": "us",
+        }
+        requests = []
+
+        def respond(request, timeout):
+            body = json.loads(request.data)
+            requests.append((request.full_url, body))
+            if len(requests) > 4:
+                self.fail("Session recovery exceeded one login and one retry")
+            if "LatestGlucoseValues" in request.full_url:
+                if body["sessionId"] == old_session or reject_new_session:
+                    detail = json.dumps({"Code": error_code, "Message": "Session unavailable"})
+                    raise df.urllib.error.HTTPError(
+                        request.full_url, 500, "Server error", {}, io.BytesIO(detail.encode())
+                    )
+                payload = [{"Value": 108, "Trend": "Flat", "WT": "Date(1700000000000)"}]
+            elif "AuthenticatePublisherAccount" in request.full_url:
+                payload = "99999999-8888-7777-6666-555555555555"
+            elif "LoginPublisherAccountById" in request.full_url:
+                payload = new_session
+            else:
+                self.fail("Unexpected request during session recovery")
+            return io.BytesIO(json.dumps(payload).encode())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            credentials_path = Path(tmp) / "credentials.json"
+            cache_path = Path(tmp) / "session.json"
+            df._write_private_json(credentials_path, creds)
+            loaded_creds = df.load_credentials(credentials_path)
+            df.save_cached_session(cache_path, loaded_creds, old_session)
+            output = io.StringIO()
+            argv = ["dexcom_fetch.py", "--credentials", str(credentials_path),
+                    "--session-cache", str(cache_path)]
+            with unittest.mock.patch.object(df.sys, "argv", argv), \
+                    unittest.mock.patch.object(df.sys, "stdout", output), \
+                    unittest.mock.patch.object(df.urllib.request, "urlopen", side_effect=respond):
+                with self.assertRaises(SystemExit) as raised:
+                    df.main()
+            cached_session = df.load_cached_session(cache_path, loaded_creds)
+        return raised.exception.code, json.loads(output.getvalue()), cached_session, requests
+
+    def test_invalid_cached_session_recovers_and_replaces_cache(self):
+        for code in ("SessionNotValid", "SessionIdNotFound"):
+            with self.subTest(code=code):
+                exit_code, payload, cached, requests = self.run_fetch(code)
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(payload["mgdl"], 108)
+                self.assertEqual(payload["history"][0]["mgdl"], 108)
+                self.assertEqual(cached, "11111111-2222-3333-4444-555555555555")
+                self.assertEqual(len(requests), 4)
+
+    def test_rejected_replacement_session_does_not_loop_or_replace_cache(self):
+        exit_code, payload, cached, requests = self.run_fetch("SessionIdNotFound", True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(cached, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        self.assertEqual(len(requests), 4)
+
+    def test_unrelated_server_error_does_not_reauthenticate(self):
+        exit_code, payload, cached, requests = self.run_fetch("ServiceUnavailable")
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(cached, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        self.assertEqual(len(requests), 1)
 
 
 class LoginTests(unittest.TestCase):

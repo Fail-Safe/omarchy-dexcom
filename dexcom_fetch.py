@@ -237,12 +237,14 @@ def http_json(
         return None, str(exc)
     except urllib.error.HTTPError as exc:
         try:
-            with _wall_clock_deadline(max(0.1, _deadline_remaining(deadline))):
+            with exc, _wall_clock_deadline(max(0.1, _deadline_remaining(deadline))):
                 detail = _read_limited(exc, deadline=deadline).decode("utf-8", errors="replace").strip()
         except (ValueError, TimeoutError):
             detail = f"HTTP {exc.code}"
         message = detail or f"HTTP {exc.code}"
-        if exc.code in (401, 500) and "SessionNotValid" in detail:
+        if exc.code in (401, 500) and any(
+            code in detail for code in ("SessionNotValid", "SessionIdNotFound")
+        ):
             return None, "session_invalid"
         return None, message[:240]
     except urllib.error.URLError as exc:

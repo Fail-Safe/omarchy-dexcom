@@ -5,13 +5,14 @@ import qs.Commons
 import qs.Ui
 import "DexcomModel.js" as DexcomModel
 
+import "." as DexcomBackend
 BarWidget {
   id: root
   moduleName: "failsafe.dexcom"
 
   property var anchorItem: button
 
-  readonly property var service: bar && bar.shell ? bar.shell.serviceFor(moduleName) : null
+  readonly property var service: DexcomBackend.Service
   readonly property int mgdl: service ? service.mgdl : -1
   readonly property string glucoseUnit: service ? service.glucoseUnit : "mg/dL"
   readonly property string glucoseText: service ? service.glucoseText : "--"
@@ -51,6 +52,14 @@ BarWidget {
   onSettingsChanged: syncServiceSettings()
 
   function refresh() { if (service) service.refresh() }
+  Component.onCompleted: {
+    syncServiceSettings()
+    service.attachWidget()
+  }
+  Component.onDestruction: {
+    if (service) service.detachWidget()
+  }
+
   function togglePause() { if (service) service.togglePause() }
   function setChartHours(hours) { if (service) service.setChartHours(hours) }
   function open() { panel.controller.show(); refresh() }
